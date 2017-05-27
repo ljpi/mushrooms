@@ -1,0 +1,217 @@
+---
+title: "Big Data Class Project: Mushroom Classification"
+author: "Lester Pi"
+date: "May 21, 2017"
+output: pdf_document
+---
+
+```{r, echo=FALSE, include=FALSE}
+library(knitr)
+library(rmarkdown)
+library(stats)
+library(glmnet)
+library(randomForest)
+```
+
+```{r global_options, echo=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(fig.path='Figs/')
+opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+opts_chunk$set(dev = 'pdf')
+```
+
+#Introduction
+
+We have a data set comprising of mushroom characteristics. The characteristic of interest to us is if the mushroom is edible or poisonous. We will be using different methods in an attempt to correctly classify these mushrooms. We hope to find characteristics that are highly indicitive of edible safety which would then allow us to classify with higher accuracy. We will denote 1 as poisonous (p) and 0 as edible (e). The models are created on a randomly selected training data selection comprising of 66% of the data, with the remaining 34% being our test set.
+
+```{r,warning=FALSE, message=FALSE}
+setwd('/Users/lesterpi/Documents/Random Junk/other/mushrooms')
+```
+
+```{r,warning=FALSE, message=FALSE}
+#load mushroom data
+mushrooms = read.csv("mushrooms.csv")
+#convert mushroom type to char
+mushrooms$class = as.character(mushrooms$class)
+#convert mushroom type from char to binary ints
+#1 for poisonous 0 for non poisonous
+mushrooms$class = ifelse(mushrooms$class=='p',1,0)
+#sanity check
+head(mushrooms)
+
+#check for levels containing only 1 value (ignore class)
+for(i in names(mushrooms)){
+      if(length((levels(mushrooms[[i]])))<2&i!="class"){
+        mushrooms=mushrooms[, !(colnames(mushrooms) %in% c(i))]
+      }
+}
+
+
+mushrooms=na.omit(mushrooms)
+
+#create training and test sets
+## 66% of the sample size
+smp_size <- floor(.66* nrow(mushrooms))
+
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(mushrooms)), size = smp_size)
+
+train <- mushrooms[train_ind, ]
+test <- mushrooms[-train_ind, ]
+
+```
+
+#Multiple Regression
+
+Our first method is to use multiple regression. We regress whether it is poisonous or edible on all attributes. Theory tells us that a simple linear regression will not be a good model for binary classification.
+
+```{r,warning=FALSE, message=FALSE}
+
+#linear regression
+fit <- lm(class ~. , data=train)
+summary(fit)
+
+#plots the regression
+plot(fit, pch=16, which=1)
+plot(fit$fitted.values, main="Fitted Values")
+print("Fitted Values Sample:")
+print(head(fit$fitted.values,n=10))
+```
+
+However, we can see from the regression summary, plots, and fitted value sample that the behavior of this regression is not a typical linear regression. The explanatory variables are centered at either 1 or 0 and the adjusted R-squared is 1. We believe the behavior the regression is exhibiting is cause by the fact that all our independent variables are categorical and our dependent variable is binary. Our multiple regression with all categorical variables looks like it converges to logistic regression.
+
+The NAs are not shrunken values but rather caused from the dummy variable perfect multicollinearity of factors being automatically decomposed to binary variables.
+
+#Logistic Regression
+
+The next method we will use is a logistic regression.
+
+```{r,warning=FALSE, message=FALSE}
+
+model <- glm(class ~.,family=binomial(link='logit'),data=train, maxit=100)
+summary(model)
+plot(model$fitted.values, main="Fitted Values")
+```
+
+The fitted values plot shows us that the logistic regression's fitted values characteristics are the same as our multiple regression with all categorical variables.
+
+
+#Ridge Regression
+
+Building upon the logistic regression framework, we then do a Ridge Regression.
+
+```{r,warning=FALSE, message=FALSE}
+mushrooms_class = train
+mushrooms_class$class = ifelse(train$class==1,'p','e')
+mushrooms_class$class = as.factor(mushrooms_class$class)
+
+
+x <- model.matrix( ~ .-1, mushrooms_class[ , -1])
+y <- data.matrix(mushrooms_class[, 1])
+
+y = as.factor(y)
+
+
+# Fitting the model (Ridge: Alpha = 0)
+set.seed(999)
+model.ridge <- cv.glmnet(x, y, family='binomial', alpha=0, parallel=TRUE, standardize=TRUE)
+
+plot(model.ridge, xvar="lambda")
+plot(model.ridge$glmnet.fit, xvar="lambda", label=TRUE)
+model.ridge$lambda.min
+model.ridge$lambda.1se
+coef(model.ridge, s=model.ridge$lambda.min)
+
+```
+
+From the dotted line on the cross validation plot, we can see where our lambda is optimized to.
+
+Since we have our categorical variables broken into dummies, we are left with a lot of dummy variables. This makes the plot of how the coefficients are shrunk harder to read. We do, however, see that as lambda increases, there are some variables that are shrunk faster than others.
+
+We do see at our optimized lambda that none of the variables are shrunken to 0. Remember that the NAs are not shrunken values but rather caused from the dummy variable perfect multicollinearity of factors being automatically decomposed to binary variables.
+
+#LASSO Regression
+
+We want to improve on Ridge by using LASSO.
+
+```{r,warning=FALSE, message=FALSE}
+
+model.lasso <- cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE)
+plot(model.lasso)
+plot(model.lasso$glmnet.fit, xvar="lambda", label=TRUE)
+model.lasso$lambda.min
+model.lasso$lambda.1se
+coef(model.lasso, s=model.lasso$lambda.min)
+
+
+```
+
+From the dotted line on the cross validation plot, we can see where our lambda is optimized to.
+
+We can see that, compared to Ridge, there are more variables that are shrunken to 0 at the level of lambda that we get from cross validation. There are also a few that take much longer to shrink to 0.
+
+#Decision Tree
+
+Outside of the regression framework, we want to apply decision trees to our data set. We decide to go with random forests to handle the problems that come inherintly with decision trees and bagging.
+
+```{r,warning=FALSE, message=FALSE}
+
+
+tree_fit <- randomForest(class ~ .,   data=mushrooms_class)
+print(tree_fit) # view results 
+importance(tree_fit) # importance of each predictor
+varImpPlot(tree_fit)
+
+```
+
+We plot the influence by using the Mean Decrease Gini. It looks as if odor has the strongest influence with spore color being in a far second. After that, the other variables don't seem to be as influencial.
+
+
+#Which One is the Best Model?
+
+We determine which model is the best by using error rates. We use our models created from the training set data to predict based off our test set data and compute the prediction error
+
+```{r,warning=FALSE, message=FALSE}
+
+test_x = test[,-1]
+test_x_matrix = model.matrix( ~ .-1, test[,-1])
+
+multiple_test = predict(fit, newdata=test_x,type="response")
+log_test = predict(model, newdata=test_x,type="response" )
+ridge_test = predict(model.ridge, newx=test_x_matrix,type="response")
+lasso_test = predict(model.lasso, newx=test_x_matrix,type="response")
+tree_test = predict(tree_fit, newdata=test_x)
+
+head(test$class)
+head(multiple_test)
+head(log_test)
+head(ridge_test)
+head(lasso_test)
+head(tree_test)
+
+results_mult = ifelse(multiple_test>.05,1,0)
+results_log = ifelse(log_test>.05,1,0)
+results_ridge = ifelse(ridge_test>.05,1,0)
+results_lasso = ifelse(lasso_test>.05,1,0)
+results_tree = ifelse(tree_test=='p',1,0)
+
+print("Multiple Regression Prediction Error:")
+mean(results_mult != test$class)
+print("Logistic Regression Prediction Error:")
+mean(results_log != test$class)
+print("Ridge Regression Prediction Error:")
+mean(results_ridge != test$class)
+print("LASSO Regression Prediction Error:")
+mean(results_lasso != test$class)
+print("Decision Tree Prediction Error:")
+mean(results_tree != test$class)
+
+```
+
+We see that every model except our Ridge model correctly classifies with 100% accuracy (0% error). In general, the ridge regression estimates will be more biased than the OLS ones but have lower variance. However, ridge regression will work better in situation where the OLS estimates have high variance. The overall high accuracy of our prediction can be attributed to high predictability in mushroom edibility. As a further exploration into which model is better, we reduced our training set to only 20% and ended up with all models having non-zero error rates with trees having the lowest at 0.0004615385. We conclude that the tree model performs best on our data set.
+
+#Sources
+
+https://www.kaggle.com/uciml/mushroom-classification
+
+
